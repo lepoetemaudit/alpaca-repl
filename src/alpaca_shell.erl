@@ -12,7 +12,7 @@ server() ->
 
 read_expression(Prompt, Lines) ->
   Line = io:get_line(Prompt),
-  Lines_ = Line ++ Lines,
+  Lines_ = Lines ++ Line,
   ContainsTerminator = string:str(Line, ";;") > 0,
 
   if Line == "\n" -> Lines_;
