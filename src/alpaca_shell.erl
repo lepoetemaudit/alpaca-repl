@@ -36,20 +36,24 @@ read_expression(Prompt) ->
 
 % Format the result
 output_result(Result) when is_binary(Result) -> 
-  io:format("   ~s\n", [Result]);
+  io:format("~s\n", [Result]);
 
 output_result(Result) -> 
-  io:format("   ~w\n", [Result]).
+  io:format("~w\n", [Result]).
  
 % Takes a compile 'expression' module and executes its single main function,
 % displaying the result
 run_expression(Funs, Bin) ->
   % Load the module
   code:load_binary(dummy, Funs, Bin),
-  % Execute the fake function
-  Result = dummy:main({}),
+  % Execute the fake function  
   % Display the result as best we can
-  output_result(dummy:main({})).
+  % Alpaca can still error at runtime in some cases
+  % so we execute in another process  
+  spawn(fun() -> 
+    Result = dummy:main({}),  
+    output_result(Result) 
+  end).
 
 adjust_line(Line) -> Line - 5.
 
