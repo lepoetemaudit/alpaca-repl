@@ -2,6 +2,9 @@
 
 -export([start/0, server/0]).
 
+-record(repl_state, {functions = [], 
+                     types = []}).
+
 %% Entrypoints
 
 start() ->
@@ -14,13 +17,16 @@ server() ->
                " (hint: exit with ctrl-c, run expression by terminating with"
                " ';;' or an empty line)\n\n"),
   % Enter main server loop
-  server_loop(nothing). 
+  server_loop(#repl_state{}). 
 
 %% RESULT PRINTING
 
 % Format the result
 output_result(Result) when is_binary(Result) -> 
   io:format("~s\n", [Result]);
+
+output_result(Result) when is_function(Result, 0) ->
+  output_result(Result());
 
 output_result(Result) -> 
   io:format("~w\n", [Result]).
@@ -31,13 +37,13 @@ output_result(Result) ->
 % displaying the result
 run_expression(Funs, Bin) ->
   % Load the module
-  code:load_binary(dummy, Funs, Bin),
+  code:load_binary(alpaca_user_shell, Funs, Bin),
   % Execute the fake function  
   % Display the result as best we can
   % Alpaca can still error at runtime in some cases
   % so we execute in another process  
   spawn(fun() -> 
-    Result = dummy:main({}),  
+    Result = alpaca_user_shell:main({}),  
     output_result(Result) 
   end).
 
@@ -82,22 +88,32 @@ compile(Module) ->
     {error, "Compiler timed out"}
   end.
 
-handle_expression(Expr) ->
+build_module(State = #repl_state{functions = Funs}) ->
+  "module alpaca_user_shell \n\n"
+  "export main/1 \n\n" ++
+  (string:join(Funs, "")).
+  
+handle_expression(Expr, State) ->
   % Construct a fake module and inject the entered expression
   % into a fake function main/1 so we can call it from Erlang
-  Module = "module dummy \n\n"
-            "export main/1 \n\n"
-            "main () = \n" ++ Expr,
   % Compile the module
+  Module = build_module(State) ++ "main () = \n" ++ Expr,  
   case compile(Module) of
     {ok, Funs, Bin} -> run_expression(Funs, Bin);
     {error, Err} -> print_error(Err);
     Other -> print_error(Other)
-  end.
+  end,
+  State.
 
-handle_function_def(Expr) ->
-  io:put_chars("\nSorry - I can't handle function definitions (yet). "
-               "Instead, try using `let f x = ...`\n\n").
+handle_function_def(Fun, State = #repl_state{functions = Funs}) ->  
+  StateWithNewFun = State#repl_state{functions = [Fun | Funs]},
+  Module = build_module(StateWithNewFun),
+  io:format("Compiling code: ~s\n", [Module]),
+  case compile(Module) of
+    {ok, Funs, Bin} -> StateWithNewFun;
+    {error, Err} -> print_error(Err), State;
+    Other -> print_error(Other), State
+  end.
 
 %% INPUT PARSING
 
@@ -149,8 +165,8 @@ server_loop(State) ->
   Input = read_input(" -> "),  
   State_ = case parse_input(Input) of
     empty -> io:format(" -- Nothing entered\n\n");    
-    expression -> handle_expression(Input);
-    function_def -> handle_function_def(Input)
+    expression -> handle_expression(Input, State);
+    function_def -> handle_function_def(Input, State)
   end, 
   server_loop(State_).
             
