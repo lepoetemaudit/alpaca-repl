@@ -108,9 +108,8 @@ handle_expression(Expr, State) ->
 handle_function_def(Fun, State = #repl_state{functions = Funs}) ->  
   StateWithNewFun = State#repl_state{functions = [Fun | Funs]},
   Module = build_module(StateWithNewFun),
-  io:format("Compiling code: ~s\n", [Module]),
   case compile(Module) of
-    {ok, Funs, Bin} -> StateWithNewFun;
+    {ok, _, _} -> StateWithNewFun;
     {error, Err} -> print_error(Err), State;
     Other -> print_error(Other), State
   end.
