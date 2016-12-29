@@ -1,0 +1,4 @@
+* v0.0.2
+- functions and values can now be defined and evaluated
+- the master branch version of Alpaca is now used by default
+- display better error on type unify mismatch and duplicate definitions
