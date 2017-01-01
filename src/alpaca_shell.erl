@@ -148,14 +148,17 @@ handle_expression(Expr, State) ->
   end,
   State.
 
-handle_bind(Expr, State = #repl_state{bindings = Bindings, funs = FunBinds}, [_, _, Name, Args]) ->  
+handle_bind(Expr, 
+            BindType, 
+            State = #repl_state{bindings = Bindings, funs = FunBinds}, 
+            {symbol, _, Name}) ->  
   BindingExpr = "let " ++ Expr ++ " in " ++ Name ++ "\n\n",    
   Module = build_module(State) ++ BindingExpr,
   case compile(Module) of
     {ok, Funs, Bin} -> 
-      case Args of
+      case BindType of
         %% Value bind - execute the expression and store the result
-        "" -> case run_bind(Funs, Bin) of
+        value -> case run_bind(Funs, Bin) of
                 {ok, Result} -> 
                   State#repl_state{bindings = Bindings ++ [{Name, Result}]};
                 Other -> print_error(Other), State
@@ -169,26 +172,17 @@ handle_bind(Expr, State = #repl_state{bindings = Bindings, funs = FunBinds}, [_,
 
 %% INPUT PARSING
 
-% Run through a list of regular expressions,
-% breaking on the first one that matches
-input_filter(Input, []) -> {expression, []};
-input_filter(Input, [{Name, Exp} | Rest]) ->
-  case re:run(Input, Exp, [{capture, all, list}]) of
-    nomatch -> input_filter(Input, Rest);    
-    {match, Captures} -> {Name, Captures}
-  end. 
-
 % Try and identify what sort of input the user entered.
-% We use regular expressions to do this... using an actual tokenizer
-% and parser would yield much better results
 parse_input(Input) ->
-  input_filter(
-    Input, 
-    [{empty, "^(\s*)\n$"}, % Empty input
-     {expression, "^(\s*)let"}, % Let bind
-     {expression, "^(\s*)match"}, % Match expression
-     {bind, "^(\s*)([a-z][a-zA-Z]*)\s+(.*?)="} % bind
-    ]).
+  {ok, Toks, NumLines} = alpaca_scanner:scan(Input),
+  case alpaca_ast_gen:parse(Toks) of
+    {ok, {alpaca_fun_def, _, Name, Arity, Versions}} ->
+      case Arity of
+        0 -> {bind_value, Name};
+        _ -> {bind_fun, Name}
+      end;
+    {ok, Other} -> {expression, Other}
+  end.
 
 % Strip ;; and newline terminators
 strip_terminator(Line) ->
@@ -219,6 +213,7 @@ server_loop(State) ->
   State_ = case parse_input(Input) of
     {empty, _} -> io:format(" -- Nothing entered\n\n");    
     {expression, _} -> handle_expression(Input, State);
-    {bind, Captures} -> handle_bind(Input, State, Captures)
+    {bind_value, Name} -> handle_bind(Input, value, State, Name);
+    {bind_fun, Name} -> handle_bind(Input, function, State, Name)
   end, 
   server_loop(State_).
