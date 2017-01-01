@@ -24,17 +24,25 @@ server() ->
 %% RESULT PRINTING
 
 %^ Format the result
-output_result(Result) when is_binary(Result) -> 
-  io:format("-- ~s\n", [Result]);
+format_result(Result) when is_binary(Result) -> 
+  io_lib:format("\"~s\"", [Result]);
 
-output_result(Result) -> 
-  io:format("-- ~s\n", [format_value(Result)]).
+format_result(Result) -> 
+  io_lib:format("~s", [format_value(Result)]).
+
+output_result(Result, {t_arrow, Args, Return}) ->  
+  ListifiedArgs = lists:map(fun atom_to_list/1, Args),
+  ArgList = string:join(ListifiedArgs, " -> "),
+  io:format("<fun> :: ~s -> ~s~n", [ArgList, Return]);
+
+output_result(Result, Type) ->
+  io:format("~s :: ~s~n", [format_result(Result), Type]).
  
 %% EXPRESION EXECUTION
 
 %% Takes a compile 'expression' module and executes its single main function,
 %% displaying the result
-run_expression(Funs, Bin) ->
+run_expression(Funs, Bin, Type) ->
   %% Load the module
   code:load_binary(alpaca_user_shell, Funs, Bin),
   %% Execute the fake function  
@@ -43,7 +51,7 @@ run_expression(Funs, Bin) ->
   %% so we execute in another process  
   spawn(fun() -> 
     Result = alpaca_user_shell:main({}),  
-    output_result(Result) 
+    output_result(Result, Type) 
   end).
 
 run_bind(Funs, Bin) ->
@@ -113,6 +121,27 @@ compile(Module) ->
     {error, "Compiler timed out"}
   end.
 
+compile_typed(Module) ->
+ %% This can hang or crash, so run in another process    
+  Pid = spawn_link(fun () -> 
+    {ok, NV, Map, Mod} = alpaca_ast_gen:parse_module(0, Module),                                     
+    case alpaca_typer:type_modules([Mod]) of
+        {error, _}=Err -> Err;
+        {ok, [TypedMod]} ->
+          {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
+          exit({compiled, 
+                compile:forms(Forms, [report, verbose, from_core]), 
+                TypedMod})
+    end
+  end),
+  receive    
+    {'EXIT', Pid, {compiled, Res, Types}} -> {Res, Types};
+    {'EXIT', Pid, Other} -> Other
+  after 2000 ->
+    exit(Pid, timeout),
+    {error, "Compiler timed out"}
+  end.
+
 format_value(Record = #{'__struct__' := record}) ->
   NoStruct = maps:filter(fun(K, _) -> K =/= '__struct__' end, Record),
   RecordParts = lists:map(fun({K, V}) ->
@@ -136,13 +165,28 @@ build_module(State = #repl_state{bindings = Bindings, funs = Funs}) ->
   "export main/1 \n\n"
   "main () = " ++ BindingsString ++ FunsList.
   
+find_main_type([]) ->
+  {error, main_not_found};
+find_main_type([Type | Rest] = Types) when is_list(Types) ->
+  case Type of
+    {alpaca_fun_def, 
+      {t_arrow, [t_unit], ReturnType}, {symbol, _, "main"},
+      _, _} -> ReturnType;
+    _ -> find_main_type(Rest)
+  end;
+  
+find_main_type({alpaca_module, user_shell, Funs, _, _, _, FunDefs, _}) ->
+  find_main_type(FunDefs).
+
 handle_expression(Expr, State) ->
   %% Construct a fake module and inject the entered expression
   %% into a fake function main/1 so we can call it from Erlang
   %% Compile the module
   Module = build_module(State) ++ "\n" ++ Expr,  
-  case compile(Module) of
-    {ok, Funs, Bin} -> run_expression(Funs, Bin);
+  case compile_typed(Module) of
+    {{ok, Funs, Bin}, Types} -> 
+      MainType = find_main_type(Types),
+      run_expression(Funs, Bin, MainType);
     {error, Err} -> print_error(Err);
     Other -> print_error(Other)
   end,
