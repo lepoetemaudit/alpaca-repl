@@ -157,13 +157,10 @@ build_module(State = #repl_state{bindings = Bindings, funs = Funs}) ->
                    "let " ++ Name ++ " = " ++ format_value(Result) ++ " in "
                  end, Bindings),
   BindingsString = string:join(BindingsList, "\n"),
-  FunsList = lists:map(fun(F) ->
-               "let " ++ F ++ " in "
-             end, Funs),
-  FunsString = string:join(FunsList, "\n"),
-  "module user_shell \n\n"
-  "export main/1 \n\n"
-  "main () = " ++ BindingsString ++ FunsList.
+  FunsString = string:join(Funs, "\n\n"),
+  "module user_shell\n"
+  "export main/1\n\n" ++ FunsString ++ "\n\n" ++
+  "let main () = \n    " ++ BindingsString.
   
 find_main_type([]) ->
   {error, main_not_found};
@@ -196,7 +193,7 @@ handle_bind(Expr,
             BindType, 
             State = #repl_state{bindings = Bindings, funs = FunBinds}, 
             {symbol, _, Name}) ->  
-  BindingExpr = "let " ++ Expr ++ " in " ++ Name ++ "\n\n",    
+  BindingExpr = Expr ++ " in " ++ Name ++ "\n\n",    
   Module = build_module(State) ++ BindingExpr,
   case compile(Module) of
     {ok, Funs, Bin} -> 
