@@ -2,6 +2,10 @@
 
 -export([start/0, server/0]).
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -record(repl_state, {bindings = [], 
                      funs = [],
                      types = []}).
@@ -39,20 +43,6 @@ output_result(Result, Type) ->
   io:format("~s :: ~s~n", [format_result(Result), Type]).
  
 %% EXPRESION EXECUTION
-
-%% Takes a compile 'expression' module and executes its single main function,
-%% displaying the result
-run_expression(Funs, Bin, Type) ->
-  %% Load the module
-  code:load_binary(alpaca_user_shell, Funs, Bin),
-  %% Execute the fake function  
-  %% Display the result as best we can
-  %% Alpaca can still error at runtime in some cases
-  %% so we execute in another process  
-  spawn(fun() -> 
-    Result = alpaca_user_shell:main({}),  
-    output_result(Result, Type) 
-  end).
 
 run_bind(Funs, Bin) ->
   code:load_binary(alpaca_user_shell, Funs, Bin),
@@ -121,27 +111,15 @@ compile(Module) ->
     {error, "Compiler timed out"}
   end.
 
-compile_typed(Module) ->
- %% This can hang or crash, so run in another process    
-  Pid = spawn_link(fun () -> 
-    {ok, NV, Map, Mod} = alpaca_ast_gen:parse_module(0, Module),                                     
-    case alpaca_typer:type_modules([Mod]) of
-        {error, _}=Err -> Err;
-        {ok, [TypedMod]} ->
-          {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
-          exit({compiled, 
-                compile:forms(Forms, [report, verbose, from_core]), 
-                TypedMod})
-    end
-  end),
-  receive    
-    {'EXIT', Pid, {compiled, Res, Types}} -> {Res, Types};
-    {'EXIT', Pid, Other} -> Other
-  after 2000 ->
-    exit(Pid, timeout),
-    {error, "Compiler timed out"}
+compile_typed(Module) ->  
+  {ok, NV, Map, Mod} = alpaca_ast_gen:parse_module(0, Module),                                     
+  case alpaca_typer:type_modules([Mod]) of
+      {error, _}=Err -> Err;
+      {ok, [TypedMod]} ->
+        {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
+        {compile:forms(Forms, [report, verbose, from_core]), TypedMod}
   end.
-
+   
 format_value(Record = #{'__struct__' := record}) ->
   NoStruct = maps:filter(fun(K, _) -> K =/= '__struct__' end, Record),
   RecordParts = lists:map(fun({K, V}) ->
@@ -175,19 +153,29 @@ find_main_type([Type | Rest] = Types) when is_list(Types) ->
 find_main_type({alpaca_module, user_shell, Funs, _, _, _, FunDefs, _}) ->
   find_main_type(FunDefs).
 
-handle_expression(Expr, State) ->
+run_expression(Expr, State) ->
   %% Construct a fake module and inject the entered expression
   %% into a fake function main/1 so we can call it from Erlang
   %% Compile the module
   Module = build_module(State) ++ "\n" ++ Expr,  
   case compile_typed(Module) of
-    {{ok, Funs, Bin}, Types} -> 
+      {{ok, Funs, Bin}, Types} -> 
       MainType = find_main_type(Types),
-      run_expression(Funs, Bin, MainType);
-    {error, Err} -> print_error(Err);
-    Other -> print_error(Other)
-  end,
-  State.
+      %% Load the created module
+      code:load_binary(alpaca_user_shell, Funs, Bin),
+      %% Execute the main function and return both the value and the
+      %% inferred type.
+      try alpaca_user_shell:main({}) of
+        Val -> {Val, MainType}
+      catch
+        Other -> Other
+      end;
+    {error, _} = Err -> Err;
+    Other -> Other
+  end.
+
+run_expression(Expr) ->
+  run_expression(Expr, #repl_state{}).
 
 handle_bind(Expr, 
             BindType, 
@@ -253,8 +241,25 @@ server_loop(State) ->
   Input = read_input(" -> "),  
   State_ = case parse_input(Input) of
     {empty, _} -> io:format(" -- Nothing entered\n\n");    
-    {expression, _} -> handle_expression(Input, State);
+    {expression, _} -> run_expression(Input, State);
     {bind_value, Name} -> handle_bind(Input, value, State, Name);
     {bind_fun, Name} -> handle_bind(Input, function, State, Name)
   end, 
   server_loop(State_).
+
+-ifdef(TEST).
+
+input_type_test_() -> 
+  [?_assertMatch({bind_fun, {symbol, _, "myfun"}}, parse_input("let myfun f = 10")),
+   ?_assertMatch({bind_value, {symbol, _, "myval"}}, parse_input("let myval = 42")),
+   ?_assertMatch({expression, _}, parse_input("100")),
+   ?_assertMatch({expression, _}, parse_input("let f = 10 in f")),
+   ?_assertMatch({expression, _}, parse_input("let f x = x in f"))].
+
+expression_type_test_() ->
+  [?_assertMatch({42, t_int}, run_expression("42")),
+   ?_assertMatch({<<"hello">>, t_string}, run_expression("\"hello\"")),
+   ?_assertMatch({_, {t_arrow, [t_int], t_int}}, 
+                 run_expression("let f x = x + 1 in f"))].
+     
+-endif.
