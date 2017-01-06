@@ -1,6 +1,6 @@
 {application, apcshell,
- [{description, "An OTP application"},
-  {vsn, "0.1.0"},
+ [{description, "A shell for Alpaca"},
+  {vsn, "0.0.3"},
   {registered, []},
   {mod, { apcshell_app, []}},
   {applications,

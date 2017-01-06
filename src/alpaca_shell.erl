@@ -12,35 +12,38 @@
 %% Entrypoints
 
 start() ->
-  spawn(fun () -> server() end).
+    spawn(fun () -> server() end).
 
 server() ->
-  %% Trap exits
-  process_flag(trap_exit, true),
-  %% Print welcome banner
-  io:put_chars(" == Alpaca Shell 0.02a == \n\n"
-               " (hint: exit with ctrl-c, run expression by terminating with"
-               " ';;' or an empty line)\n\n"),
-  %% Enter main server loop
-  server_loop(#repl_state{}). 
+    %% Trap exits
+    process_flag(trap_exit, true),
+    %% Print welcome banner
+    io:put_chars(" == \x1b[34m Alpaca Shell 0.0.3 \x1b[0m== \n\n"
+                 " (hint: exit with ctrl-c, run expression by terminating with"
+                 " ';;' or an empty line)\n\n"),
+    %% Enter main server loop
+    server_loop(#repl_state{}). 
 
 %% RESULT PRINTING
 
 %^ Format the result
 format_result(Result) when is_binary(Result) -> 
-  io_lib:format("\"~s\"", [Result]);
+    io_lib:format("\"~s\"", [Result]);
 
 format_result(Result) -> 
-  io_lib:format("~s", [format_value(Result)]).
+    io_lib:format("~s", [format_value(Result)]).
 
 output_result(Result, {t_arrow, Args, Return}) ->  
-  ListifiedArgs = lists:map(fun atom_to_list/1, Args),
-  ArgList = string:join(ListifiedArgs, " -> "),
-  io:format("<fun> :: ~s -> ~s~n", [ArgList, Return]);
+    ListifiedArgs = lists:map(fun atom_to_list/1, Args),
+    ArgList = string:join(ListifiedArgs, " -> "),
+    print_result(io_lib:format("<fun> :: ~s -> ~s~n", [ArgList, Return]));
 
 output_result(Result, Type) ->
-    io:format("~s :: ~s~n", [format_result(Result), Type]).
+    print_result(io_lib:format("~s :: ~s~n", [format_result(Result), Type])).
  
+ print_result(Text) ->
+    io:format("\x1b[32m -- ~s\x1b[0m\n\n", [Text]).
+
 %% EXPRESION EXECUTION
 
 run_bind(Funs, Bin) ->
@@ -114,11 +117,11 @@ build_module(State = #repl_state{bindings = Bindings}) ->
 find_main_type([]) ->
   {error, main_not_found};
 find_main_type([Type | Rest] = Types) when is_list(Types) ->
-  case Type of
-    {alpaca_fun_def, 
-      {t_arrow, [t_unit], ReturnType}, {symbol, _, "main"},
-      _, _} -> ReturnType;
-    _ -> find_main_type(Rest)
+    case Type of
+        {alpaca_fun_def, 
+            {t_arrow, [t_unit], ReturnType}, {symbol, _, "main"},
+             _, _} -> ReturnType;
+        _ -> find_main_type(Rest)
   end;
   
 find_main_type({alpaca_module, user_shell, Funs, _, _, _, FunDefs, _}) ->
@@ -130,30 +133,30 @@ run_expression(Expr, State) ->
     %% Compile the module
     Module = build_module(State) ++ "\n    " ++ Expr ++ "\n\n",  
     case compile_typed(Module) of
-      {{ok, Funs, Bin}, Types} -> 
-        MainType = find_main_type(Types),
-        %% Load the created module
-        code:load_binary(alpaca_user_shell, Funs, Bin),
-        %% Execute the main function and return both the value and the
-        %% inferred type.
-        try alpaca_user_shell:main({}) of
-          Val -> {ok, {Val, MainType}}
-        catch
-          Other -> Other
+        {{ok, Funs, Bin}, Types} -> 
+            MainType = find_main_type(Types),
+            %% Load the created module
+            code:load_binary(alpaca_user_shell, Funs, Bin),
+            %% Execute the main function and return both the value and the
+            %% inferred type.
+            try alpaca_user_shell:main({}) of
+                Val -> {ok, {Val, MainType}}
+            catch
+                Other -> Other
         end;
-    {error, _} = Err -> Err;
-    Other -> Other
+        {error, _} = Err -> Err;
+        Other -> Other
   end.
 
 run_expression(Expr) ->
-  run_expression(Expr, #repl_state{}).
+    run_expression(Expr, #repl_state{}).
 
 handle_expression(Expr, State) ->
-  case run_expression(Expr, State) of
-    {ok, {Val, MainType}} -> output_result(Val, MainType);
-    {error, Err} -> output_error(format_error(Err))
-  end,
-  State.
+    case run_expression(Expr, State) of
+        {ok, {Val, MainType}} -> output_result(Val, MainType);
+        {error, Err} -> output_error(format_error(Err))
+    end,
+    State.
 
 handle_bind(Expr, 
             BindType, 
@@ -175,13 +178,14 @@ handle_bind(Expr,
             %% Function bind - we don't need to run it, just store the expression
             _ -> State#repl_state{bindings = Bindings ++ [{function, Expr}]}
       end;
-    {error, Err} -> {error, Err, State};
-    Other -> {error, Other, State}
+      {error, Err} -> {error, Err, State};
+      Other -> {error, Other, State}
   end.
 
 %% INPUT PARSING
 
 % Try and identify what sort of input the user entered.
+parse_input("") -> {empty, ""};
 parse_input(Input) ->
     case alpaca_scanner:scan(Input) of
         {ok, Toks, NumLines} ->
@@ -192,13 +196,14 @@ parse_input(Input) ->
                         _ -> {bind_fun, Name}
                     end;
                     %% TODO - this is nasty
-                    {ok, {error, non_literal_value, Name, _}} -> {bind_value, Name};
+                    {ok, {error, non_literal_value, Name, _}} -> 
+                        {bind_value, Name};
+
                     {ok, Other} -> {expression, Other};
                     {error, _} = Err -> Err
             end;
         {error, Err, _} -> {error, Err}
     end.
-
 % Strip ;; and newline terminators
 strip_terminator(Line) ->
   L = re:replace(Line, ";;\n$", "", [{return, list}]),
@@ -214,7 +219,7 @@ read_input(Prompt, Lines) ->
     Lines_ = Lines ++ strip_terminator(Line),
     case line_terminates(Line) of
         true -> Lines_;
-        false -> read_input(" .. ", Lines_)
+        false -> read_input(" \x1b[33m... \x1b[0m", Lines_)
     end.
 
 read_input(Prompt) ->
@@ -224,7 +229,7 @@ read_input(Prompt) ->
 
 server_loop(State) ->
     % Collect input - supporting functions or types currently  
-    Input = read_input(" -> "),  
+    Input = read_input(" \x1b[33m " ++ [955] ++ "\x1b[0m  "),  
     State_ = case parse_input(Input) of
         {empty, _} -> io:format(" -- Nothing entered\n\n");    
         {expression, _} -> handle_expression(Input, State);
