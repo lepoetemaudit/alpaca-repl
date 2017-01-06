@@ -231,7 +231,7 @@ server_loop(State) ->
     % Collect input - supporting functions or types currently  
     Input = read_input(" \x1b[33m " ++ [955] ++ "\x1b[0m  "),  
     State_ = case parse_input(Input) of
-        {empty, _} -> io:format(" -- Nothing entered\n\n");    
+        {empty, _} -> io:format(" -- Nothing entered\n\n"), State;
         {expression, _} -> handle_expression(Input, State);
         {bind_value, Name} -> handle_bind(Input, value, State, Name);
         {bind_fun, Name} -> handle_bind(Input, function, State, Name);
