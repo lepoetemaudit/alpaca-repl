@@ -2,194 +2,208 @@
 
 -export([start/0, server/0]).
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -record(repl_state, {bindings = [], 
-                     funs = [],
                      types = []}).
 
 %% Entrypoints
 
 start() ->
-  spawn(fun () -> server() end).
+    spawn(fun () -> server() end).
 
 server() ->
-  %% Trap exits
-  process_flag(trap_exit, true),
-  %% Print welcome banner
-  io:put_chars(" == Alpaca Shell 0.02a == \n\n"
-               " (hint: exit with ctrl-c, run expression by terminating with"
-               " ';;' or an empty line)\n\n"),
-  %% Enter main server loop
-  server_loop(#repl_state{}). 
+    %% Trap exits
+    process_flag(trap_exit, true),
+    %% Print welcome banner
+    io:put_chars(" == \x1b[34m Alpaca Shell 0.0.3 \x1b[0m== \n\n"
+                 " (hint: exit with ctrl-c, run expression by terminating with"
+                 " ';;' or an empty line)\n\n"),
+    %% Enter main server loop
+    server_loop(#repl_state{}). 
 
 %% RESULT PRINTING
 
 %^ Format the result
-output_result(Result) when is_binary(Result) -> 
-  io:format("-- ~s\n", [Result]);
+format_result(Result) when is_binary(Result) -> 
+    io_lib:format("\"~s\"", [Result]);
 
-output_result(Result) -> 
-  io:format("-- ~s\n", [format_value(Result)]).
+format_result(Result) -> 
+    io_lib:format("~s", [format_value(Result)]).
+
+output_result(Result, {t_arrow, Args, Return}) ->  
+    ListifiedArgs = lists:map(fun atom_to_list/1, Args),
+    ArgList = string:join(ListifiedArgs, " -> "),
+    print_result(io_lib:format("<fun> :: ~s -> ~s~n", [ArgList, Return]));
+
+output_result(Result, Type) ->
+    print_result(io_lib:format("~s :: ~s~n", [format_result(Result), Type])).
  
+ print_result(Text) ->
+    io:format("\x1b[32m -- ~s\x1b[0m\n\n", [Text]).
+
 %% EXPRESION EXECUTION
 
-%% Takes a compile 'expression' module and executes its single main function,
-%% displaying the result
-run_expression(Funs, Bin) ->
-  %% Load the module
-  code:load_binary(alpaca_user_shell, Funs, Bin),
-  %% Execute the fake function  
-  %% Display the result as best we can
-  %% Alpaca can still error at runtime in some cases
-  %% so we execute in another process  
-  spawn(fun() -> 
-    Result = alpaca_user_shell:main({}),  
-    output_result(Result) 
-  end).
-
 run_bind(Funs, Bin) ->
-  code:load_binary(alpaca_user_shell, Funs, Bin),
-  Pid = spawn_link(fun() -> 
+    code:load_binary(alpaca_user_shell, Funs, Bin),
     try alpaca_user_shell:main({}) of
-      Res -> exit({ok, Res})
+        Res -> {ok, Res}
     catch      
-      error:Err -> exit(Err)
-    end
-  end),
-  receive    
-    {'EXIT', Pid, {ok, Res}} -> {ok, Res};
-    {'EXIT', Pid, Other} -> Other
-  after 5000 ->
-    exit(Pid, timeout),
-    {error, "Execution timed out"}
-  end.
+        error:Err -> {error, Err}
+    end.
 
 %% ERROR PRINTING
 
-adjust_line(Line) -> Line - 5.
+format_error({Line, alpaca_parser, [Error, Detail]}) ->
+    {HumanDetail, Help} = case Detail of
+        "assign" -> {"=", " (maybe you're missing a let?)"};
+        Other -> {Other, ""}
+    end,
+    io_lib:format("Syntax Error: ~s'~s'~s",  [Error, HumanDetail, Help]);
+format_error({bad_variable_name, Var}) ->
+    io_lib:format("Unknown variable: ~s", [Var]);
+format_error({not_found, _, Symbol, _}) ->
+    io_lib:format("Unknown symbol: ~s", [Symbol]);  
+format_error({cannot_unify, _, _, TypeOne, TypeTwo}) ->
+    io_lib:format("Type Mismatch: ~s was expected but ~s provided", [TypeOne, TypeTwo]);
+format_error({duplicate_definition, Name, _}) ->
+    io_lib:format("Already defined: ~s", [Name]);
+format_error({_, alpaca_scan, {_, Msg}}) ->
+    io_lib:format("Scan error: ~s", [Msg]);    
+format_error(Other) when is_list(Other) ->
+    io_lib:format("Unknown Error: ~s", [Other]);
+format_error(Other) ->
+    io_lib:format("Unknown Error: ~p", [Other]).
 
-print_error({Line, alpaca_parser, Err}) ->
-  io:format("\x1b[31m -- Syntax Error: ~B: ~w", [adjust_line(Line), Err]);
+output_error(Text) ->
+    io:format("\x1b[31m -- ~s\x1b[0m\n\n", [Text]).
 
-print_error({bad_variable_name, Var}) ->
-  io:format("\x1b[31m -- Unknown variable: ~s\n\x1b[0m", [Var]);
-
-print_error({not_found, _, Symbol, _}) ->
-  io:format("\x1b[31m -- Unknown symbol: ~s\n\x1b[0m", [Symbol]);
-
-print_error({badmatch, {error, {Line, alpaca_parser, [Error, Detail]}}}) ->
-  io:format(
-    "\x1b[31m -- Syntax Error: ~B: ~s~s\n\x1b[0m", 
-    [adjust_line(Line), Error, Detail]);
-
-print_error({cannot_unify, _, _, TypeOne, TypeTwo}) ->
-  io:format(
-    "\x1b[31m -- Type Mismatch: A ~s was expected but a ~s was provided\n\x1b[0m", [TypeOne, TypeTwo]);
-
-print_error({duplicate_definition, Name, _}) ->
- io:format(
-    "\x1b[31m -- Already defined: ~s\n\x1b[0m", [Name]);
-
-print_error(Other) when is_list(Other) ->
-  io:format("\x1b[31m -- Unknown Error: ~s\n\x1b[0m", [Other]);
-print_error(Other) ->
-  io:format("\x1b[31m -- Unknown Error: ~w\n\x1b[0m", [Other]).
- 
 %% COMPILING
-compile(Module) ->
-  %% This can hang or crash, so run in another process    
-  Pid = spawn_link(fun () -> 
-               try alpaca:compile({text, Module}) of
-                 Res -> exit({compiled, Res})
-               catch 
-                 error:Err -> exit({error, Err});
-                 Anything -> exit(Anything)
-               end
-             end),
-  receive    
-    {'EXIT', Pid, {compiled, Res}} -> Res;
-    {'EXIT', Pid, Other} -> Other
-  after 2000 ->
-    exit(Pid, timeout),
-    {error, "Compiler timed out"}
+compile_typed(Module) ->
+    {ok, NV, Map, Mod} = alpaca_ast_gen:parse_module(0, Module),                                     
+    case alpaca_typer:type_modules([Mod]) of
+        {error, _}=Err -> Err;
+        {ok, [TypedMod]} ->
+            {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
+            {compile:forms(Forms, [report, verbose, from_core]), TypedMod}
   end.
-
+   
+%% VALUE FORMATTING (injects Erlang values into Alpaca source)
+%% TODO - it might be wiser to generate tokens rather than raw strings
 format_value(Record = #{'__struct__' := record}) ->
-  NoStruct = maps:filter(fun(K, _) -> K =/= '__struct__' end, Record),
-  RecordParts = lists:map(fun({K, V}) ->
-                  atom_to_list(K) ++ " = " ++ format_value(V)
-                end, maps:to_list(NoStruct)),
+    NoStruct = maps:filter(fun(K, _) -> K =/= '__struct__' end, Record),
+    RecordParts = lists:map(fun({K, V}) ->
+                      atom_to_list(K) ++ " = " ++ format_value(V)
+                  end, maps:to_list(NoStruct)),
   "{" ++ string:join(RecordParts, ", ") ++ "}";
 format_value(V) when is_atom(V) ->
     io_lib:format(":~w", [V]);
 format_value(V) -> io_lib:format("~w", [V]).
 
-build_module(State = #repl_state{bindings = Bindings, funs = Funs}) ->
-  BindingsList = lists:map(fun({Name, Result}) ->
-                   "let " ++ Name ++ " = " ++ format_value(Result) ++ " in "
-                 end, Bindings),
-  BindingsString = string:join(BindingsList, "\n"),
-  FunsList = lists:map(fun(F) ->
-               "let " ++ F ++ " in "
-             end, Funs),
-  FunsString = string:join(FunsList, "\n"),
-  "module user_shell \n\n"
-  "export main/1 \n\n"
-  "main () = " ++ BindingsString ++ FunsList.
-  
-handle_expression(Expr, State) ->
-  %% Construct a fake module and inject the entered expression
-  %% into a fake function main/1 so we can call it from Erlang
-  %% Compile the module
-  Module = build_module(State) ++ "\n" ++ Expr,  
-  case compile(Module) of
-    {ok, Funs, Bin} -> run_expression(Funs, Bin);
-    {error, Err} -> print_error(Err);
-    Other -> print_error(Other)
-  end,
-  State.
+render_bind({value, {Name, Type, Result}}) ->
+    lists:flatten(io_lib:format("let ~s = ~s in \n", [Name, format_value(Result)]));
+render_bind({function, Body}) -> 
+    lists:flatten(io_lib:format("~s in \n", [Body])).
 
-handle_bind(Expr, State = #repl_state{bindings = Bindings, funs = FunBinds}, [_, _, Name, Args]) ->  
-  BindingExpr = "let " ++ Expr ++ " in " ++ Name ++ "\n\n",    
-  Module = build_module(State) ++ BindingExpr,
-  case compile(Module) of
-    {ok, Funs, Bin} -> 
-      case Args of
-        %% Value bind - execute the expression and store the result
-        "" -> case run_bind(Funs, Bin) of
-                {ok, Result} -> 
-                  State#repl_state{bindings = Bindings ++ [{Name, Result}]};
-                Other -> print_error(Other), State
-              end;
-        %% Function bind - we don't need to run it, just store the expression
-        _ -> State#repl_state{funs = FunBinds ++ [Expr]}
+build_module(State = #repl_state{bindings = Bindings}) ->
+    BindingsList = lists:map(fun render_bind/1, Bindings),
+    BindingsString = string:join(BindingsList, "\n"),
+    "module user_shell\n"
+    "export main/1\n\n"
+    "let main () = \n    " ++ BindingsString.
+  
+find_main_type([]) ->
+  {error, main_not_found};
+find_main_type([Type | Rest] = Types) when is_list(Types) ->
+    case Type of
+        {alpaca_fun_def, 
+            {t_arrow, [t_unit], ReturnType}, {symbol, _, "main"},
+             _, _} -> ReturnType;
+        _ -> find_main_type(Rest)
+  end;
+  
+find_main_type({alpaca_module, user_shell, Funs, _, _, _, FunDefs, _}) ->
+    find_main_type(FunDefs).
+
+run_expression(Expr, State) ->
+    %% Construct a fake module and inject the entered expression
+    %% into a fake function main/1 so we can call it from Erlang
+    %% Compile the module
+    Module = build_module(State) ++ "\n    " ++ Expr ++ "\n\n",  
+    case compile_typed(Module) of
+        {{ok, Funs, Bin}, Types} -> 
+            MainType = find_main_type(Types),
+            %% Load the created module
+            code:load_binary(alpaca_user_shell, Funs, Bin),
+            %% Execute the main function and return both the value and the
+            %% inferred type.
+            try alpaca_user_shell:main({}) of
+                Val -> {ok, {Val, MainType}}
+            catch
+                Other -> Other
+        end;
+        {error, _} = Err -> Err;
+        Other -> Other
+  end.
+
+run_expression(Expr) ->
+    run_expression(Expr, #repl_state{}).
+
+handle_expression(Expr, State) ->
+    case run_expression(Expr, State) of
+        {ok, {Val, MainType}} -> output_result(Val, MainType);
+        {error, Err} -> output_error(format_error(Err))
+    end,
+    State.
+
+handle_bind(Expr, 
+            BindType, 
+            State = #repl_state{bindings = Bindings}, 
+            {symbol, _, Name}) ->  
+    BindingExpr = Expr ++ " in " ++ Name ++ "\n\n",    
+    Module = build_module(State) ++ BindingExpr,
+    case compile_typed(Module) of
+        {{ok, Funs, Bin}, Types} -> 
+        MainType = find_main_type(Types),
+        case BindType of
+            %% Value bind - execute the expression and store the result
+            value -> case run_bind(Funs, Bin) of
+                        {ok, Result} -> 
+                            Bindings_ = Bindings ++ [{value, {Name, MainType, Result}}],
+                            State#repl_state{bindings = Bindings_};
+                            Other -> {error, Other, State}
+                     end;
+            %% Function bind - we don't need to run it, just store the expression
+            _ -> State#repl_state{bindings = Bindings ++ [{function, Expr}]}
       end;
-    {error, Err} -> print_error(Err), State;
-    Other -> print_error(Other), State
+      {error, Err} -> {error, Err, State};
+      Other -> {error, Other, State}
   end.
 
 %% INPUT PARSING
 
-% Run through a list of regular expressions,
-% breaking on the first one that matches
-input_filter(Input, []) -> {expression, []};
-input_filter(Input, [{Name, Exp} | Rest]) ->
-  case re:run(Input, Exp, [{capture, all, list}]) of
-    nomatch -> input_filter(Input, Rest);    
-    {match, Captures} -> {Name, Captures}
-  end. 
-
 % Try and identify what sort of input the user entered.
-% We use regular expressions to do this... using an actual tokenizer
-% and parser would yield much better results
+parse_input("") -> {empty, ""};
 parse_input(Input) ->
-  input_filter(
-    Input, 
-    [{empty, "^(\s*)\n$"}, % Empty input
-     {expression, "^(\s*)let"}, % Let bind
-     {expression, "^(\s*)match"}, % Match expression
-     {bind, "^(\s*)([a-z][a-zA-Z]*)\s+(.*?)="} % bind
-    ]).
+    case alpaca_scanner:scan(Input) of
+        {ok, Toks, NumLines} ->
+            case alpaca_ast_gen:parse(Toks) of
+                {ok, {alpaca_fun_def, _, Name, Arity, Versions}} ->
+                    case Arity of
+                        0 -> {bind_value, Name};
+                        _ -> {bind_fun, Name}
+                    end;
+                    %% TODO - this is nasty
+                    {ok, {error, non_literal_value, Name, _}} -> 
+                        {bind_value, Name};
 
+                    {ok, Other} -> {expression, Other};
+                    {error, _} = Err -> Err
+            end;
+        {error, Err, _} -> {error, Err}
+    end.
 % Strip ;; and newline terminators
 strip_terminator(Line) ->
   L = re:replace(Line, ";;\n$", "", [{return, list}]),
@@ -201,24 +215,63 @@ line_terminates(Line) ->
 
 % Read input until terminating condition found 
 read_input(Prompt, Lines) ->
-  Line = io:get_line(Prompt),
-  Lines_ = Lines ++ strip_terminator(Line),
-  case line_terminates(Line) of
-     true -> Lines_;
-     false -> read_input(" .. ", Lines_)
-  end.
+    Line = io:get_line(Prompt),
+    Lines_ = Lines ++ strip_terminator(Line),
+    case line_terminates(Line) of
+        true -> Lines_;
+        false -> read_input(" \x1b[33m... \x1b[0m", Lines_)
+    end.
 
 read_input(Prompt) ->
-  read_input(Prompt, []).
+     read_input(Prompt, []).
 
 %% MAIN LOOP
 
 server_loop(State) ->
-  % Collect input - supporting functions or types currently  
-  Input = read_input(" -> "),  
-  State_ = case parse_input(Input) of
-    {empty, _} -> io:format(" -- Nothing entered\n\n");    
-    {expression, _} -> handle_expression(Input, State);
-    {bind, Captures} -> handle_bind(Input, State, Captures)
-  end, 
-  server_loop(State_).
+    % Collect input - supporting functions or types currently  
+    Input = read_input(" \x1b[33m " ++ [955] ++ "\x1b[0m  "),  
+    State_ = case parse_input(Input) of
+        {empty, _} -> io:format(" -- Nothing entered\n\n");    
+        {expression, _} -> handle_expression(Input, State);
+        {bind_value, Name} -> handle_bind(Input, value, State, Name);
+        {bind_fun, Name} -> handle_bind(Input, function, State, Name);
+        {error, Err} -> output_error(format_error(Err)), State
+    end, 
+    server_loop(State_).
+
+-ifdef(TEST).
+
+input_type_test_() -> 
+    [?_assertMatch({bind_fun, {symbol, _, "myfun"}}, parse_input("let myfun f = 10")),
+     ?_assertMatch({bind_value, {symbol, _, "myval"}}, parse_input("let myval = 42")),
+     ?_assertMatch({expression, _}, parse_input("100")),
+     ?_assertMatch({expression, _}, parse_input("let f = 10 in f")),
+     ?_assertMatch({expression, _}, parse_input("let f x = x in f"))].
+
+expression_type_test_() ->
+    [?_assertMatch({ok, {42, t_int}}, run_expression("42")),
+     ?_assertMatch({ok, {<<"hello">>, t_string}}, run_expression("\"hello\"")),
+     ?_assertMatch({ok, {_, {t_arrow, [t_int], t_int}}}, 
+                   run_expression("let f x = x + 1 in f"))].
+     
+error_test_() ->
+    [?_assertMatch({error, {cannot_unify, _, _, t_int, t_string}}, 
+                 run_expression("\"hello\" + 42")),
+     ?_assertMatch({error, {1, alpaca_parser, ["syntax error before: ", "break"]}},
+                 parse_input("let a b c;;"))].
+
+value_bind_test() ->
+    State = handle_bind("let num = 42", value, #repl_state{}, {symbol, 1, "num"}),
+    ?assertMatch(#repl_state{bindings = [{value, {"num", t_int, 42}}]}, State),
+    ?assertMatch({ok, {42, t_int}}, run_expression("num", State)).
+
+value_expression_bind_test() ->
+    State = handle_bind("let num = 24 + 24", value, #repl_state{}, {symbol, 1, "num"}),
+    ?assertMatch(#repl_state{bindings = [{value, {"num", t_int, 48}}]}, State),
+    ?assertMatch({ok, {48, t_int}}, run_expression("num", State)).
+
+fun_bind_test() ->
+    State = handle_bind("let sqr x = x * x", function, #repl_state{}, {symbol, 1, "sqr"}),
+    ?assertMatch(#repl_state{bindings = [{function, "let sqr x = x * x"}]}, State).
+
+-endif.
