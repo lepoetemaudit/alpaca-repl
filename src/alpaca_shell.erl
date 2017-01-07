@@ -54,7 +54,15 @@ format_type({t_tuple, Types}) ->
     TypeNames = lists:map(fun format_type/1, Types),
     TypeString = string:join(TypeNames, ", "),
     Output = io_lib:format("(~s)", [TypeString]),
-    lists:flatten(Output).
+    lists:flatten(Output);
+format_type({t_record, Members, _}) ->
+    MemberList = lists:map(fun({t_record_member, Name, T}) ->
+                               atom_to_list(Name) ++ " : " ++ format_type(T)
+                           end, Members),
+    MemberString = string:join(MemberList, ", "),
+    "{" ++ MemberString ++ "}";
+format_type(Other) ->
+    io_lib:format("~p", [Other]).
 
 output_result(Result, {t_arrow, Args, Return}) ->  
     ListifiedArgs = lists:map(fun format_type/1, Args),
@@ -108,10 +116,10 @@ output_error(Text) ->
 compile_typed(Module) ->
     {ok, NV, Map, Mod} = alpaca_ast_gen:parse_module(0, Module),                                     
     case alpaca_typer:type_modules([Mod]) of
-        {error, _}=Err -> Err;
         {ok, [TypedMod]} ->
             {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
-            {compile:forms(Forms, [report, verbose, from_core]), TypedMod}
+            {compile:forms(Forms, [report, verbose, from_core]), TypedMod};
+        Err -> err
   end.
    
 %% VALUE FORMATTING (injects Erlang values into Alpaca source)
