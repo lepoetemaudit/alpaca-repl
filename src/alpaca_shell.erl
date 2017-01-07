@@ -119,7 +119,7 @@ compile_typed(Module) ->
         {ok, [TypedMod]} ->
             {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
             {compile:forms(Forms, [report, verbose, from_core]), TypedMod};
-        Err -> err
+        Err -> Err
   end.
    
 %% VALUE FORMATTING (injects Erlang values into Alpaca source)
