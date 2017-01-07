@@ -33,13 +33,37 @@ format_result(Result) when is_binary(Result) ->
 format_result(Result) -> 
     io_lib:format("~s", [format_value(Result)]).
 
+format_type({unbound, T, _}) ->
+    case T of
+        t0 -> "'a";
+        t1 -> "'b";
+        t2 -> "'c";
+        t3 -> "'d";
+        t4 -> "'e";
+        t5 -> "'f";
+        t6 -> "'g";
+        t7 -> "'h";
+        t8 -> "'i";
+        _  -> "'?"
+    end;
+format_type(T) when is_atom(T) ->
+    atom_to_list(T);
+format_type({t_list, T}) ->
+    io_lib:format("list ~s", [format_type(T)]);
+format_type({t_tuple, Types}) ->
+    TypeNames = lists:map(fun format_type/1, Types),
+    TypeString = string:join(TypeNames, ", "),
+    Output = io_lib:format("(~s)", [TypeString]),
+    lists:flatten(Output).
+
 output_result(Result, {t_arrow, Args, Return}) ->  
-    ListifiedArgs = lists:map(fun atom_to_list/1, Args),
+    ListifiedArgs = lists:map(fun format_type/1, Args),
     ArgList = string:join(ListifiedArgs, " -> "),
-    print_result(io_lib:format("<fun> :: ~s -> ~s~n", [ArgList, Return]));
+
+    print_result(io_lib:format("<fun> :: ~s -> ~s", [ArgList, format_type(Return)]));
 
 output_result(Result, Type) ->
-    print_result(io_lib:format("~s :: ~s~n", [format_result(Result), Type])).
+    print_result(io_lib:format("~s :: ~s", [format_result(Result), format_type(Type)])).
  
  print_result(Text) ->
     io:format("\x1b[32m -- ~s\x1b[0m\n\n", [Text]).
@@ -92,6 +116,7 @@ compile_typed(Module) ->
    
 %% VALUE FORMATTING (injects Erlang values into Alpaca source)
 %% TODO - it might be wiser to generate tokens rather than raw strings
+
 format_value(Record = #{'__struct__' := record}) ->
     NoStruct = maps:filter(fun(K, _) -> K =/= '__struct__' end, Record),
     RecordParts = lists:map(fun({K, V}) ->
