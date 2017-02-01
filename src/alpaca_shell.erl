@@ -9,6 +9,7 @@
 -endif.
 
 -record(repl_state, {bindings = [], 
+                     functions = [],
                      types = []}).
 
 %% Entrypoints
@@ -115,7 +116,7 @@ output_error(Text) ->
     io:format("\x1b[31m -- ~s\x1b[0m\n\n", [Text]).
 
 %% COMPILING
-compile_typed(Module) ->    
+compile_typed(Module) ->
     Mods = alpaca_ast_gen:make_modules([Module]), 
     case alpaca_typer:type_modules(Mods) of
         {ok, [TypedMod]} ->
@@ -137,16 +138,20 @@ format_value(V) when is_atom(V) ->
     io_lib:format(":~w", [V]);
 format_value(V) -> io_lib:format("~w", [V]).
 
-render_bind({value, {Name, Type, Result}}) ->
-    lists:flatten(io_lib:format("let ~s = ~s in \n", [Name, format_value(Result)]));
-render_bind({function, Body}) -> 
-    lists:flatten(io_lib:format("~s in \n", [Body])).
+render_bind({Name, Type, Result}) ->
+    lists:flatten(io_lib:format("let ~s = ~s in \n", [Name, format_value(Result)])).
 
-build_module(State = #repl_state{bindings = Bindings}) ->
-    BindingsList = lists:map(fun render_bind/1, Bindings),
+render_fun(Body) ->
+    Body ++ "\n".
+
+build_module(State = #repl_state{bindings = Bindings, functions = Funs}) ->
+    FunsList = lists:map(fun render_fun/1, Funs),
+    FunsString = string:join(FunsList, "\n"),
+    BindingsList = lists:map(fun render_bind/1, Bindings),    
     BindingsString = string:join(BindingsList, "\n"),
     "module user_shell\n"
-    "export main/1\n\n"
+    "export main/1\n\n" ++
+    FunsString ++
     "let main () = \n    " ++ BindingsString.
   
 find_main_type([]) ->
@@ -193,29 +198,34 @@ handle_expression(Expr, State) ->
     end,
     State.
 
+handle_fundef(Expr, State = #repl_state{functions = Functions}, {symbol, _, Name}) ->
+    NewFuns = [Expr | Functions],
+    StateWithFun = State#repl_state{functions=NewFuns},
+    Module = build_module(StateWithFun) ++ "    :ok",
+    case compile_typed(Module) of
+        {{ok, Funs, Bin}, Types} ->
+            State#repl_state{functions = NewFuns};
+        {error, Err} -> {error, Err, State};
+        Other -> {error, Other, State}
+    end.
+
 handle_bind(Expr, 
-            BindType, 
             State = #repl_state{bindings = Bindings}, 
             {symbol, _, Name}) ->  
-    BindingExpr = Expr ++ " in " ++ Name ++ "\n\n",    
+    
+    BindingExpr = Expr ++ " in " ++ Name ++ "\n\n",
     Module = build_module(State) ++ BindingExpr,
     case compile_typed(Module) of
         {{ok, Funs, Bin}, Types} -> 
-        MainType = find_main_type(Types),
-        case BindType of
+            MainType = find_main_type(Types),
             %% Value bind - execute the expression and store the result
-            value -> case run_bind(Funs, Bin) of
-                        {ok, Result} -> 
-                            Bindings_ = Bindings ++ [{value, {Name, MainType, Result}}],
-                            State#repl_state{bindings = Bindings_};
-                            Other -> {error, Other, State}
-                     end;
-            %% Function bind - we don't need to run it, just store the expression
-            _ -> State#repl_state{bindings = Bindings ++ [{function, Expr}]}
-      end;
-      {error, Err} -> {error, Err, State};
-      Other -> {error, Other, State}
-  end.
+            {ok, Result} = run_bind(Funs, Bin),                
+            Bindings_ = Bindings ++ [{Name, MainType, Result}],
+            State#repl_state{bindings = Bindings_};
+    
+        {error, Err} -> {error, Err, State};
+        Other -> {error, Other, State}
+    end.
 
 %% INPUT PARSING
 
@@ -268,8 +278,8 @@ server_loop(State) ->
     State_ = case parse_input(Input) of
         {empty, _} -> io:format(" -- Nothing entered\n\n"), State;
         {expression, _} -> handle_expression(Input, State);
-        {bind_value, Name} -> handle_bind(Input, value, State, Name);
-        {bind_fun, Name} -> handle_bind(Input, function, State, Name);
+        {bind_value, Name} -> handle_bind(Input, State, Name);
+        {bind_fun, Name} -> handle_fundef(Input, State, Name);
         {error, Err} -> output_error(format_error(Err)), State
     end, 
     server_loop(State_).
@@ -296,17 +306,17 @@ error_test_() ->
                  parse_input("let a b c;;"))].
 
 value_bind_test() ->
-    State = handle_bind("let num = 42", value, #repl_state{}, {symbol, 1, "num"}),
-    ?assertMatch(#repl_state{bindings = [{value, {"num", t_int, 42}}]}, State),
+    State = handle_bind("let num = 42", #repl_state{}, {symbol, 1, "num"}),
+    ?assertMatch(#repl_state{bindings = [{"num", t_int, 42}]}, State),
     ?assertMatch({ok, {42, t_int}}, run_expression("num", State)).
 
 value_expression_bind_test() ->
-    State = handle_bind("let num = 24 + 24", value, #repl_state{}, {symbol, 1, "num"}),
-    ?assertMatch(#repl_state{bindings = [{value, {"num", t_int, 48}}]}, State),
+    State = handle_bind("let num = 24 + 24", #repl_state{}, {symbol, 1, "num"}),
+    ?assertMatch(#repl_state{bindings = [{"num", t_int, 48}]}, State),
     ?assertMatch({ok, {48, t_int}}, run_expression("num", State)).
 
 fun_bind_test() ->
-    State = handle_bind("let sqr x = x * x", function, #repl_state{}, {symbol, 1, "sqr"}),
-    ?assertMatch(#repl_state{bindings = [{function, "let sqr x = x * x"}]}, State).
+    State = handle_fundef("let sqr x = x * x", #repl_state{}, {symbol, 1, "sqr"}),
+    ?assertMatch(#repl_state{functions = ["let sqr x = x * x"]}, State).
 
 -endif.
