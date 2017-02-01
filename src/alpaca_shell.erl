@@ -2,6 +2,8 @@
 
 -export([start/0, server/0]).
 
+-include_lib("alpaca/src/alpaca_ast.hrl").
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -113,9 +115,9 @@ output_error(Text) ->
     io:format("\x1b[31m -- ~s\x1b[0m\n\n", [Text]).
 
 %% COMPILING
-compile_typed(Module) ->
-    {ok, NV, Map, Mod} = alpaca_ast_gen:parse_module(0, Module),                                     
-    case alpaca_typer:type_modules([Mod]) of
+compile_typed(Module) ->    
+    Mods = alpaca_ast_gen:make_modules([Module]), 
+    case alpaca_typer:type_modules(Mods) of
         {ok, [TypedMod]} ->
             {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
             {compile:forms(Forms, [report, verbose, from_core]), TypedMod};
@@ -157,7 +159,7 @@ find_main_type([Type | Rest] = Types) when is_list(Types) ->
         _ -> find_main_type(Rest)
   end;
   
-find_main_type({alpaca_module, user_shell, Funs, _, _, _, FunDefs, _}) ->
+find_main_type(#alpaca_module{functions=FunDefs}) ->
     find_main_type(FunDefs).
 
 run_expression(Expr, State) ->
