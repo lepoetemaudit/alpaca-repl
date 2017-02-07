@@ -117,7 +117,7 @@ output_error(Text) ->
 
 %% COMPILING
 compile_typed(Module) ->
-    Mods = alpaca_ast_gen:make_modules([Module]), 
+    {ok, Mods} = alpaca_ast_gen:make_modules([{alpaca_usershell, Module}]), 
     case alpaca_typer:type_modules(Mods) of
         {ok, [TypedMod]} ->
             {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
