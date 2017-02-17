@@ -158,13 +158,14 @@ find_main_type([]) ->
   {error, main_not_found};
 find_main_type([Type | Rest] = Types) when is_list(Types) ->
     case Type of
-        {alpaca_fun_def, 
-            {t_arrow, [t_unit], ReturnType}, {symbol, _, "main"},
-             _, _} -> ReturnType;
+        #alpaca_binding{ 
+            type={t_arrow, [t_unit], ReturnType}, 
+            name={symbol, _, "main"}} ->             
+                ReturnType;
         _ -> find_main_type(Rest)
   end;
   
-find_main_type(#alpaca_module{functions=FunDefs}) ->
+find_main_type(#alpaca_module{functions=FunDefs}) ->    
     find_main_type(FunDefs).
 
 run_expression(Expr, State) ->
@@ -235,17 +236,24 @@ parse_input(Input) ->
     case alpaca_scanner:scan(Input) of
         {ok, Toks, NumLines} ->
             case alpaca_ast_gen:parse(Toks) of
-                {ok, {alpaca_fun_def, _, Name, Arity, Versions}} ->
+
+                {ok, #alpaca_binding{
+                        name=Name,                                             
+                        bound_expr=#alpaca_fun{arity=Arity},
+                        body=undefined}} ->
                     case Arity of
                         0 -> {bind_value, Name};
                         _ -> {bind_fun, Name}
                     end;
-                    %% TODO - this is nasty
-                    {ok, {error, non_literal_value, Name, _}} -> 
-                        {bind_value, Name};
 
-                    {ok, Other} -> {expression, Other};
-                    {error, _} = Err -> Err
+                {ok, #alpaca_binding{name=Name, body=undefined}} -> {bind_value, Name};                
+
+                %% TODO - this is nasty
+                {ok, {error, non_literal_value, Name, _}} -> 
+                    {bind_value, Name};
+
+                {ok, Other} -> {expression, Other};
+                {error, _} = Err -> Err
             end;
         {error, Err, _} -> {error, Err}
     end.
