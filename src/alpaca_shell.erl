@@ -2,13 +2,13 @@
 
 -export([start/0, server/0]).
 
--include_lib("alpaca/src/alpaca_ast.hrl").
+-include_lib("src/alpaca_ast.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--record(repl_state, {bindings = [], 
+-record(repl_state, {bindings = [],
                      functions = [],
                      types = []}).
 
@@ -18,6 +18,7 @@ start() ->
     spawn(fun () -> server() end).
 
 server() ->
+    ensure_alpaca(),
     %% Trap exits
     process_flag(trap_exit, true),
     %% Print welcome banner
@@ -25,15 +26,15 @@ server() ->
                  " (hint: exit with ctrl-c, run expression by terminating with"
                  " ';;' or an empty line)\n\n"),
     %% Enter main server loop
-    server_loop(#repl_state{}). 
+    server_loop(#repl_state{}).
 
 %% RESULT PRINTING
 
 %^ Format the result
-format_result(Result) when is_binary(Result) -> 
+format_result(Result) when is_binary(Result) ->
     io_lib:format("\"~s\"", [Result]);
 
-format_result(Result) -> 
+format_result(Result) ->
     io_lib:format("~s", [format_value(Result)]).
 
 format_type({unbound, T, _}) ->
@@ -67,7 +68,7 @@ format_type({t_record, Members, _}) ->
 format_type(Other) ->
     io_lib:format("~p", [Other]).
 
-output_result(Result, {t_arrow, Args, Return}) ->  
+output_result(Result, {t_arrow, Args, Return}) ->
     ListifiedArgs = lists:map(fun format_type/1, Args),
     ArgList = string:join(ListifiedArgs, " -> "),
 
@@ -75,7 +76,7 @@ output_result(Result, {t_arrow, Args, Return}) ->
 
 output_result(Result, Type) ->
     print_result(io_lib:format("~s :: ~s", [format_result(Result), format_type(Type)])).
- 
+
  print_result(Text) ->
     io:format("\x1b[32m -- ~s\x1b[0m\n\n", [Text]).
 
@@ -85,7 +86,7 @@ run_bind(Funs, Bin) ->
     code:load_binary(alpaca_user_shell, Funs, Bin),
     try alpaca_user_shell:main({}) of
         Res -> {ok, Res}
-    catch      
+    catch
         error:Err -> {error, Err}
     end.
 
@@ -100,13 +101,13 @@ format_error({Line, alpaca_parser, [Error, Detail]}) ->
 format_error({bad_variable_name, Var}) ->
     io_lib:format("Unknown variable: ~s", [Var]);
 format_error({not_found, _, Symbol, _}) ->
-    io_lib:format("Unknown symbol: ~s", [Symbol]);  
+    io_lib:format("Unknown symbol: ~s", [Symbol]);
 format_error({cannot_unify, _, _, TypeOne, TypeTwo}) ->
     io_lib:format("Type Mismatch: ~s was expected but ~s provided", [TypeOne, TypeTwo]);
 format_error({duplicate_definition, Name, _}) ->
     io_lib:format("Already defined: ~s", [Name]);
 format_error({_, alpaca_scan, {_, Msg}}) ->
-    io_lib:format("Scan error: ~s", [Msg]);    
+    io_lib:format("Scan error: ~s", [Msg]);
 format_error(Other) when is_list(Other) ->
     io_lib:format("Unknown Error: ~s", [Other]);
 format_error(Other) ->
@@ -117,14 +118,14 @@ output_error(Text) ->
 
 %% COMPILING
 compile_typed(Module) ->
-    {ok, Mods} = alpaca_ast_gen:make_modules([{alpaca_usershell, Module}]), 
+    {ok, Mods} = alpaca_ast_gen:make_modules([{alpaca_usershell, Module}]),
     case alpaca_typer:type_modules(Mods) of
         {ok, [TypedMod]} ->
             {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
             {compile:forms(Forms, [report, verbose, from_core]), TypedMod};
         Err -> Err
   end.
-   
+
 %% VALUE FORMATTING (injects Erlang values into Alpaca source)
 %% TODO - it might be wiser to generate tokens rather than raw strings
 
@@ -147,34 +148,40 @@ render_fun(Body) ->
 build_module(State = #repl_state{bindings = Bindings, functions = Funs}) ->
     FunsList = lists:map(fun render_fun/1, Funs),
     FunsString = string:join(FunsList, "\n"),
-    BindingsList = lists:map(fun render_bind/1, Bindings),    
+    BindingsList = lists:map(fun render_bind/1, Bindings),
     BindingsString = string:join(BindingsList, "\n"),
     "module user_shell\n"
     "export main/1\n\n" ++
     FunsString ++
     "let main () = \n    " ++ BindingsString.
-  
+
 find_main_type([]) ->
   {error, main_not_found};
 find_main_type([Type | Rest] = Types) when is_list(Types) ->
     case Type of
-        #alpaca_binding{ 
-            type={t_arrow, [t_unit], ReturnType}, 
-            name={symbol, _, "main"}} ->             
-                ReturnType;
-        _ -> find_main_type(Rest)
+        #alpaca_binding{
+            type={t_arrow, [t_unit], ReturnType},
+            name={symbol, _, "main"}} ->
+            ReturnType;
+
+        #alpaca_binding{
+            type={t_arrow, [t_unit], ReturnType},
+            name={'Symbol', #{name := <<"main">>}}} ->
+            ReturnType;
+
+    _ -> find_main_type(Rest)
   end;
-  
-find_main_type(#alpaca_module{functions=FunDefs}) ->    
+
+find_main_type(#alpaca_module{functions=FunDefs}) ->
     find_main_type(FunDefs).
 
 run_expression(Expr, State) ->
     %% Construct a fake module and inject the entered expression
     %% into a fake function main/1 so we can call it from Erlang
     %% Compile the module
-    Module = build_module(State) ++ "\n    " ++ Expr ++ "\n\n",  
+    Module = build_module(State) ++ "\n    " ++ Expr ++ "\n\n",
     case compile_typed(Module) of
-        {{ok, Funs, Bin}, Types} -> 
+        {{ok, Funs, Bin}, Types} ->
             MainType = find_main_type(Types),
             %% Load the created module
             code:load_binary(alpaca_user_shell, Funs, Bin),
@@ -199,7 +206,7 @@ handle_expression(Expr, State) ->
     end,
     State.
 
-handle_fundef(Expr, State = #repl_state{functions = Functions}, {symbol, _, Name}) ->
+handle_fundef(Expr, State = #repl_state{functions = Functions}, {Symbol,  #{name := Name}}) ->
     NewFuns = [Expr | Functions],
     StateWithFun = State#repl_state{functions=NewFuns},
     Module = build_module(StateWithFun) ++ "    :ok",
@@ -210,20 +217,20 @@ handle_fundef(Expr, State = #repl_state{functions = Functions}, {symbol, _, Name
         Other -> {error, Other, State}
     end.
 
-handle_bind(Expr, 
-            State = #repl_state{bindings = Bindings}, 
-            {symbol, _, Name}) ->  
-    
-    BindingExpr = Expr ++ " in " ++ Name ++ "\n\n",
+handle_bind(Expr,
+            State = #repl_state{bindings = Bindings},
+            {'Symbol', #{name := Name}}) ->
+
+    BindingExpr = Expr ++ " in " ++ binary_to_list(Name) ++ "\n\n",
     Module = build_module(State) ++ BindingExpr,
     case compile_typed(Module) of
-        {{ok, Funs, Bin}, Types} -> 
+        {{ok, Funs, Bin}, Types} ->
             MainType = find_main_type(Types),
             %% Value bind - execute the expression and store the result
-            {ok, Result} = run_bind(Funs, Bin),                
+            {ok, Result} = run_bind(Funs, Bin),
             Bindings_ = Bindings ++ [{Name, MainType, Result}],
             State#repl_state{bindings = Bindings_};
-    
+
         {error, Err} -> {error, Err, State};
         Other -> {error, Other, State}
     end.
@@ -238,7 +245,7 @@ parse_input(Input) ->
             case alpaca_ast_gen:parse(Toks) of
 
                 {ok, #alpaca_binding{
-                        name=Name,                                             
+                        name=Name,
                         bound_expr=#alpaca_fun{arity=Arity},
                         body=undefined}} ->
                     case Arity of
@@ -246,10 +253,10 @@ parse_input(Input) ->
                         _ -> {bind_fun, Name}
                     end;
 
-                {ok, #alpaca_binding{name=Name, body=undefined}} -> {bind_value, Name};                
+                {ok, #alpaca_binding{name=Name, body=undefined}} -> {bind_value, Name};
 
                 %% TODO - this is nasty
-                {ok, {error, non_literal_value, Name, _}} -> 
+                {ok, {error, non_literal_value, Name, _}} ->
                     {bind_value, Name};
 
                 {ok, Other} -> {expression, Other};
@@ -266,7 +273,7 @@ strip_terminator(Line) ->
 line_terminates(Line) ->
     (re:run(Line, ";;\n$") /= nomatch) or (Line == "\n").
 
-% Read input until terminating condition found 
+% Read input until terminating condition found
 read_input(Prompt, Lines) ->
     Line = io:get_line(Prompt),
     Lines_ = Lines ++ strip_terminator(Line),
@@ -281,20 +288,30 @@ read_input(Prompt) ->
 %% MAIN LOOP
 
 server_loop(State) ->
-    % Collect input - supporting functions or types currently  
-    Input = read_input(" \x1b[33m " ++ [955] ++ "\x1b[0m  "),  
+    % Collect input - supporting functions or types currently
+    Input = read_input(" \x1b[33m " ++ [955] ++ "\x1b[0m  "),
     State_ = case parse_input(Input) of
         {empty, _} -> io:format(" -- Nothing entered\n\n"), State;
         {expression, _} -> handle_expression(Input, State);
         {bind_value, Name} -> handle_bind(Input, State, Name);
         {bind_fun, Name} -> handle_fundef(Input, State, Name);
         {error, Err} -> output_error(format_error(Err)), State
-    end, 
+    end,
     server_loop(State_).
+
+ensure_alpaca() ->
+    %% Locate Alpaca compiler
+    AlpacaHome = os:getenv("ALPACA_ROOT", "/usr/local/opt/alpaca/ebin"),
+    code:add_path(AlpacaHome),
+    AlpacaModules =
+        [alpaca, alpaca_ast, alpaca_ast_gen, alpaca_codegen,
+         alpaca_compiled_po, alpaca_error_format, alpaca_exhaustiveness,
+         alpaca_parser, alpaca_scan, alpaca_scanner, alpaca_typer],
+    ok = code:ensure_modules_loaded(AlpacaModules).
 
 -ifdef(TEST).
 
-input_type_test_() -> 
+input_type_test_() ->
     [?_assertMatch({bind_fun, {symbol, _, "myfun"}}, parse_input("let myfun f = 10")),
      ?_assertMatch({bind_value, {symbol, _, "myval"}}, parse_input("let myval = 42")),
      ?_assertMatch({expression, _}, parse_input("100")),
@@ -304,11 +321,11 @@ input_type_test_() ->
 expression_type_test_() ->
     [?_assertMatch({ok, {42, t_int}}, run_expression("42")),
      ?_assertMatch({ok, {<<"hello">>, t_string}}, run_expression("\"hello\"")),
-     ?_assertMatch({ok, {_, {t_arrow, [t_int], t_int}}}, 
+     ?_assertMatch({ok, {_, {t_arrow, [t_int], t_int}}},
                    run_expression("let f x = x + 1 in f"))].
-     
+
 error_test_() ->
-    [?_assertMatch({error, {cannot_unify, _, _, t_int, t_string}}, 
+    [?_assertMatch({error, {cannot_unify, _, _, t_int, t_string}},
                  run_expression("\"hello\" + 42")),
      ?_assertMatch({error, {1, alpaca_parser, ["syntax error before: ", "break"]}},
                  parse_input("let a b c;;"))].
