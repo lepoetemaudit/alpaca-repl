@@ -10,7 +10,8 @@
 
 -record(repl_state, {bindings = [],
                      functions = [],
-                     types = []}).
+                     types = [],
+                     shell_id = undefined}).
 
 %% Entrypoints
 
@@ -25,8 +26,12 @@ server() ->
     io:put_chars(" == \x1b[34m Alpaca Shell 0.0.3 \x1b[0m== \n\n"
                  " (hint: exit with ctrl-c, run expression by terminating with"
                  " ';;' or an empty line)\n\n"),
+    %% Generate a unique identifier for this shell
+    ShellId = binary_to_list(base64:encode(crypto:strong_rand_bytes(12))),
     %% Enter main server loop
-    server_loop(#repl_state{}).
+
+    server_loop(#repl_state{shell_id=ShellId}).
+
 
 %% RESULT PRINTING
 
@@ -82,49 +87,40 @@ output_result(Result, Type) ->
 
 %% EXPRESION EXECUTION
 
-run_bind(Funs, Bin) ->
-    code:load_binary(alpaca_user_shell, Funs, Bin),
-    try alpaca_user_shell:main({}) of
-        Res -> {ok, Res}
-    catch
-        error:Err -> {error, Err}
-    end.
-
+%%run_bind(Funs, Bin) ->
+%%    code:load_binary(alpaca_user_shell, Funs, Bin),
 %% ERROR PRINTING
 
-format_error({Line, alpaca_parser, [Error, Detail]}) ->
-    {HumanDetail, Help} = case Detail of
-        "assign" -> {"=", " (maybe you're missing a let?)"};
-        Other -> {Other, ""}
-    end,
-    io_lib:format("Syntax Error: ~s'~s'~s",  [Error, HumanDetail, Help]);
-format_error({bad_variable_name, Var}) ->
-    io_lib:format("Unknown variable: ~s", [Var]);
-format_error({not_found, _, Symbol, _}) ->
-    io_lib:format("Unknown symbol: ~s", [Symbol]);
-format_error({cannot_unify, _, _, TypeOne, TypeTwo}) ->
-    io_lib:format("Type Mismatch: ~s was expected but ~s provided", [TypeOne, TypeTwo]);
-format_error({duplicate_definition, Name, _}) ->
-    io_lib:format("Already defined: ~s", [Name]);
-format_error({_, alpaca_scan, {_, Msg}}) ->
-    io_lib:format("Scan error: ~s", [Msg]);
-format_error(Other) when is_list(Other) ->
-    io_lib:format("Unknown Error: ~s", [Other]);
-format_error(Other) ->
-    io_lib:format("Unknown Error: ~p", [Other]).
+format_error(Err) ->
+    alpaca_error_format:fmt({error, Err}, "en_US").
 
 output_error(Text) ->
     io:format("\x1b[31m -- ~s\x1b[0m\n\n", [Text]).
 
 %% COMPILING
-compile_typed(Module) ->
-    {ok, Mods} = alpaca_ast_gen:make_modules([{alpaca_usershell, Module}]),
-    case alpaca_typer:type_modules(Mods) of
-        {ok, [TypedMod]} ->
-            {ok, Forms} = alpaca_codegen:gen(TypedMod, []),
-            {compile:forms(Forms, [report, verbose, from_core]), TypedMod};
-        Err -> Err
-  end.
+compile_typed(Module, Beams, State = #repl_state{shell_id=ShellId}) ->
+    %% Write module code to temporary file
+    TempFile = "/tmp/shell_" ++ ShellId ++ ".alp",
+    file:write_file(TempFile, Module, [write, sync]),
+    %% Wait until it has definitely written (sync)
+    (fun WaitSync() ->
+         case file:read_file_info(TempFile) of
+             {ok, _} -> ok;
+             enoent -> timer:sleep(5), WaitSync()
+         end
+     end
+    )(),
+
+    case alpaca:compile({files, [TempFile | Beams]}) of
+        {ok, Mods} ->
+            [{compiled_module, Name, FN, B}] = Mods,
+            {module, Mod} = code:load_binary(Name, FN, B),
+            ModTypes = proplists:get_value(
+                         alpaca_typeinfo, Mod:module_info(attributes)),
+            {ok, {Mod, ModTypes}};
+        {error, _} = Err -> Err
+    end.
+
 
 %% VALUE FORMATTING (injects Erlang values into Alpaca source)
 %% TODO - it might be wiser to generate tokens rather than raw strings
@@ -175,19 +171,33 @@ find_main_type([Type | Rest] = Types) when is_list(Types) ->
 find_main_type(#alpaca_module{functions=FunDefs}) ->
     find_main_type(FunDefs).
 
+collect_beams(Module) ->
+    %% Collect .beam files for any referenced dependencies
+    {user_shell, DepModules} = alpaca:list_dependencies(Module),
+    ModRefs = lists:map(
+                fun(M) -> "alpaca_" ++ atom_to_list(M) ++ ".beam" end,
+                DepModules),
+
+    lists:filtermap(fun(M) -> case code:where_is_file(M) of 
+                                  non_existing -> false;
+                                  Path -> {true, Path}
+                              end
+                    end,
+                    ModRefs).
+
 run_expression(Expr, State) ->
     %% Construct a fake module and inject the entered expression
     %% into a fake function main/1 so we can call it from Erlang
     %% Compile the module
     Module = build_module(State) ++ "\n    " ++ Expr ++ "\n\n",
-    case compile_typed(Module) of
-        {{ok, Funs, Bin}, Types} ->
+    Beams = collect_beams(Module),
+
+    case compile_typed(Module, Beams, State) of
+        {ok, {Mod, Types}} ->
             MainType = find_main_type(Types),
-            %% Load the created module
-            code:load_binary(alpaca_user_shell, Funs, Bin),
             %% Execute the main function and return both the value and the
             %% inferred type.
-            try alpaca_user_shell:main({}) of
+            try Mod:main({}) of
                 Val -> {ok, {Val, MainType}}
             catch
                 Other -> Other
@@ -210,8 +220,9 @@ handle_fundef(Expr, State = #repl_state{functions = Functions}, {Symbol,  #{name
     NewFuns = [Expr | Functions],
     StateWithFun = State#repl_state{functions=NewFuns},
     Module = build_module(StateWithFun) ++ "    :ok",
-    case compile_typed(Module) of
-        {{ok, Funs, Bin}, Types} ->
+    Beams = collect_beams(Module),
+    case compile_typed(Module, Beams, State) of
+        {ok, _} ->
             State#repl_state{functions = NewFuns};
         {error, Err} -> {error, Err, State};
         Other -> {error, Other, State}
@@ -223,16 +234,17 @@ handle_bind(Expr,
 
     BindingExpr = Expr ++ " in " ++ binary_to_list(Name) ++ "\n\n",
     Module = build_module(State) ++ BindingExpr,
-    case compile_typed(Module) of
-        {{ok, Funs, Bin}, Types} ->
+    Beams = collect_beams(Module),
+    case compile_typed(Module, Beams, State) of
+        {ok, {Mod, Types}} ->
             MainType = find_main_type(Types),
             %% Value bind - execute the expression and store the result
-            {ok, Result} = run_bind(Funs, Bin),
-            Bindings_ = Bindings ++ [{Name, MainType, Result}],
-            State#repl_state{bindings = Bindings_};
-
-        {error, Err} -> {error, Err, State};
-        Other -> {error, Other, State}
+            try Mod:main({}) of
+                Res -> Bindings_ = Bindings ++ [{Name, MainType, Res}],
+                       State#repl_state{bindings = Bindings_}
+            catch
+                error:Err -> {error, Err}
+            end
     end.
 
 %% INPUT PARSING
