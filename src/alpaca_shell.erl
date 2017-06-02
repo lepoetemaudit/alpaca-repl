@@ -19,13 +19,13 @@ start() ->
     spawn(fun () -> server() end).
 
 server() ->
-    ensure_alpaca(),
+    halt(),
     %% Trap exits
     process_flag(trap_exit, true),
     %% Print welcome banner
-    io:put_chars(" == \x1b[34m Alpaca Shell 0.0.3 \x1b[0m== \n\n"
-                 " (hint: exit with ctrl-c, run expression by terminating with"
-                 " ';;' or an empty line)\n\n"),
+    io:put_chars("\x1b[32m== \x1b[0m\x1b[34m Alpaca Shell 0.0.4 \x1b[32m\x1b[0m== \n\n"
+                 "(hint: exit with ctrl-c, run expressions by terminating with "
+                 "';;' or an empty line)\n\n"),
     %% Generate a unique identifier for this shell
     ShellId = binary_to_list(base64:encode(crypto:strong_rand_bytes(12))),
     %% Enter main server loop
@@ -77,13 +77,13 @@ output_result(Result, {t_arrow, Args, Return}) ->
     ListifiedArgs = lists:map(fun format_type/1, Args),
     ArgList = string:join(ListifiedArgs, " -> "),
 
-    print_result(io_lib:format("<fun> :: ~s -> ~s", [ArgList, format_type(Return)]));
+    print_result(io_lib:format("<fun> \x1b[32m::\x1b[0m ~s -> ~s", [ArgList, format_type(Return)]));
 
 output_result(Result, Type) ->
-    print_result(io_lib:format("~s :: ~s", [format_result(Result), format_type(Type)])).
+    print_result(io_lib:format("~s \x1b[32m::\x1b[0m ~s", [format_result(Result), format_type(Type)])).
 
  print_result(Text) ->
-    io:format("\x1b[32m -- ~s\x1b[0m\n\n", [Text]).
+    io:format("~s\x1b[0m\n\n", [Text]).
 
 %% EXPRESION EXECUTION
 
@@ -100,13 +100,13 @@ output_error(Text) ->
 %% COMPILING
 compile_typed(Module, Beams, State = #repl_state{shell_id=ShellId}) ->
     %% Write module code to temporary file
-    TempFile = "/tmp/shell_" ++ ShellId ++ ".alp",
+    TempFile = ".alpaca-repl" ++ ShellId ++ ".alp",
     file:write_file(TempFile, Module, [write, sync]),
     %% Wait until it has definitely written (sync)
     (fun WaitSync() ->
          case file:read_file_info(TempFile) of
              {ok, _} -> ok;
-             enoent -> timer:sleep(5), WaitSync()
+             {error, enoent} -> timer:sleep(5), WaitSync()
          end
      end
     )(),
@@ -178,7 +178,7 @@ collect_beams(Module) ->
                 fun(M) -> "alpaca_" ++ atom_to_list(M) ++ ".beam" end,
                 DepModules),
 
-    lists:filtermap(fun(M) -> case code:where_is_file(M) of 
+    lists:filtermap(fun(M) -> case code:where_is_file(M) of
                                   non_existing -> false;
                                   Path -> {true, Path}
                               end
@@ -291,7 +291,7 @@ read_input(Prompt, Lines) ->
     Lines_ = Lines ++ strip_terminator(Line),
     case line_terminates(Line) of
         true -> Lines_;
-        false -> read_input(" \x1b[33m... \x1b[0m", Lines_)
+        false -> read_input("\x1b[33m- \x1b[0m", Lines_)
     end.
 
 read_input(Prompt) ->
@@ -301,7 +301,7 @@ read_input(Prompt) ->
 
 server_loop(State) ->
     % Collect input - supporting functions or types currently
-    Input = read_input(" \x1b[33m " ++ [955] ++ "\x1b[0m  "),
+    Input = read_input("\x1b[33m" ++ [955] ++ "\x1b[0m "),
     State_ = case parse_input(Input) of
         {empty, _} -> io:format(" -- Nothing entered\n\n"), State;
         {expression, _} -> handle_expression(Input, State);
@@ -310,16 +310,6 @@ server_loop(State) ->
         {error, Err} -> output_error(format_error(Err)), State
     end,
     server_loop(State_).
-
-ensure_alpaca() ->
-    %% Locate Alpaca compiler
-    AlpacaHome = os:getenv("ALPACA_ROOT", "/usr/local/opt/alpaca/ebin"),
-    code:add_path(AlpacaHome),
-    AlpacaModules =
-        [alpaca, alpaca_ast, alpaca_ast_gen, alpaca_codegen,
-         alpaca_compiled_po, alpaca_error_format, alpaca_exhaustiveness,
-         alpaca_parser, alpaca_scan, alpaca_scanner, alpaca_typer],
-    ok = code:ensure_modules_loaded(AlpacaModules).
 
 -ifdef(TEST).
 
