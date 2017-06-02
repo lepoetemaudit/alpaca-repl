@@ -19,7 +19,6 @@ start() ->
     spawn(fun () -> server() end).
 
 server() ->
-    halt(),
     %% Trap exits
     process_flag(trap_exit, true),
     %% Print welcome banner

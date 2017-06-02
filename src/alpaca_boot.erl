@@ -11,7 +11,7 @@ start() ->
         "/usr/lib/alpaca",
         "/usr/local/lib/alpaca"],
     AlpacaHome = get_best_path(AlpacaPaths),
-    code:add_path(AlpacaHome),
+    code:add_path(AlpacaHome ++ "/ebin"),
     AlpacaModules =
         [alpaca, alpaca_ast, alpaca_ast_gen, alpaca_codegen,
          alpaca_compiled_po, alpaca_error_format, alpaca_exhaustiveness,
@@ -28,7 +28,7 @@ get_best_path([]) ->
 
 get_best_path([Path | Rest]) ->
     case filelib:is_dir(Path) of
-        true -> {ok, Path};
+        true -> Path;
         false -> get_best_path(Rest)
     end.
 
