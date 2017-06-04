@@ -11,7 +11,7 @@
 -record(repl_state, {bindings = [],
                      functions = [],
                      types = [],
-                     shell_id = undefined}).
+                     shell_id = "__shell__"}).
 
 %% Entrypoints
 
@@ -26,11 +26,13 @@ server() ->
                  "(hint: exit with ctrl-c, run expressions by terminating with "
                  "';;' or an empty line)\n\n"),
     %% Generate a unique identifier for this shell
-    ShellId = binary_to_list(base64:encode(crypto:strong_rand_bytes(12))),
+    ShellId = make_shell_id(),
     %% Enter main server loop
-
     server_loop(#repl_state{shell_id=ShellId}).
 
+make_shell_id() ->
+    Ident = base64:encode(crypto:strong_rand_bytes(12)),
+    re:replace(Ident, "[=+]", "", [{return, list}]).
 
 %% RESULT PRINTING
 
@@ -313,8 +315,11 @@ server_loop(State) ->
 -ifdef(TEST).
 
 input_type_test_() ->
-    [?_assertMatch({bind_fun, {symbol, _, "myfun"}}, parse_input("let myfun f = 10")),
-     ?_assertMatch({bind_value, {symbol, _, "myval"}}, parse_input("let myval = 42")),
+    [?_assertMatch(
+        {bind_fun, {'Symbol', #{name := <<"myfun">>}}},
+        parse_input("let myfun f = 10")),
+     ?_assertMatch({bind_value, {'Symbol', #{name := <<"myval">>}}},
+        parse_input("let myval = 42")),
      ?_assertMatch({expression, _}, parse_input("100")),
      ?_assertMatch({expression, _}, parse_input("let f = 10 in f")),
      ?_assertMatch({expression, _}, parse_input("let f x = x in f"))].
@@ -332,17 +337,31 @@ error_test_() ->
                  parse_input("let a b c;;"))].
 
 value_bind_test() ->
-    State = handle_bind("let num = 42", #repl_state{}, {symbol, 1, "num"}),
-    ?assertMatch(#repl_state{bindings = [{"num", t_int, 42}]}, State),
+    AlpacaModules =
+        [alpaca, alpaca_ast, alpaca_ast_gen, alpaca_codegen,
+         alpaca_compiled_po, alpaca_error_format, alpaca_exhaustiveness,
+         alpaca_parser, alpaca_scan, alpaca_scanner, alpaca_typer],
+    ok = code:ensure_modules_loaded(AlpacaModules),
+    State = handle_bind(
+        "let num = 42",
+         #repl_state{},
+         {'Symbol', #{name => <<"num">>}}),
+    ?assertMatch(#repl_state{bindings = [{<<"num">>, t_int, 42}]}, State),
     ?assertMatch({ok, {42, t_int}}, run_expression("num", State)).
 
 value_expression_bind_test() ->
-    State = handle_bind("let num = 24 + 24", #repl_state{}, {symbol, 1, "num"}),
-    ?assertMatch(#repl_state{bindings = [{"num", t_int, 48}]}, State),
+    State = handle_bind(
+        "let num = 24 + 24", 
+        #repl_state{}, 
+        {'Symbol', #{name => <<"num">>}}),
+    ?assertMatch(#repl_state{bindings = [{<<"num">>, t_int, 48}]}, State),
     ?assertMatch({ok, {48, t_int}}, run_expression("num", State)).
 
 fun_bind_test() ->
-    State = handle_fundef("let sqr x = x * x", #repl_state{}, {symbol, 1, "sqr"}),
+    State = handle_fundef(
+        "let sqr x = x * x", 
+        #repl_state{}, 
+        {'Symbol', #{name => "sqr"}}),
     ?assertMatch(#repl_state{functions = ["let sqr x = x * x"]}, State).
 
 -endif.
