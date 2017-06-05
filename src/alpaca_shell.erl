@@ -9,7 +9,6 @@
 -endif.
 
 -record(repl_state, {bindings = [],
-                     functions = [],
                      types = [],
                      shell_id = "__shell__"}).
 
@@ -22,9 +21,9 @@ server() ->
     %% Trap exits
     process_flag(trap_exit, true),
     %% Print welcome banner
-    io:put_chars("\x1b[32m== \x1b[0m\x1b[34m Alpaca Shell 0.0.4 \x1b[32m\x1b[0m== \n\n"
-                 "(hint: exit with ctrl-c, run expressions by terminating with "
-                 "';;' or an empty line)\n\n"),
+    io:put_chars("\x1b[32m==\x1b[0m\x1b[34m Alpaca Shell 0.0.4 \x1b[32m==\x1b[0m\n\n"
+                 "\x1b[32m(Exit with ctrl-c, run expressions by terminating with "
+                 "';;' or an empty line)\x1b[0m\n\n"),
     %% Generate a unique identifier for this shell
     ShellId = make_shell_id(),
     %% Enter main server loop
@@ -32,7 +31,7 @@ server() ->
 
 make_shell_id() ->
     Ident = base64:encode(crypto:strong_rand_bytes(12)),
-    re:replace(Ident, "[=+]", "", [{return, list}]).
+    re:replace(Ident, "[=+/]", "", [{return, list}]).
 
 %% RESULT PRINTING
 
@@ -136,20 +135,17 @@ format_value(V) when is_atom(V) ->
     io_lib:format(":~w", [V]);
 format_value(V) -> io_lib:format("~w", [V]).
 
-render_bind({Name, Type, Result}) ->
-    lists:flatten(io_lib:format("let ~s = ~s in \n", [Name, format_value(Result)])).
+render_bind({_, Expr}) ->
+    Expr ++ " in \n".
 
 render_fun(Body) ->
     Body ++ "\n".
 
-build_module(State = #repl_state{bindings = Bindings, functions = Funs}) ->
-    FunsList = lists:map(fun render_fun/1, Funs),
-    FunsString = string:join(FunsList, "\n"),
+build_module(State = #repl_state{bindings = Bindings}) ->
     BindingsList = lists:map(fun render_bind/1, Bindings),
     BindingsString = string:join(BindingsList, "\n"),
     "module user_shell\n"
     "export main/1\n\n" ++
-    FunsString ++
     "let main () = \n    " ++ BindingsString.
 
 find_main_type([]) ->
@@ -217,32 +213,28 @@ handle_expression(Expr, State) ->
     end,
     State.
 
-handle_fundef(Expr, State = #repl_state{functions = Functions}, {Symbol,  #{name := Name}}) ->
-    NewFuns = [Expr | Functions],
-    StateWithFun = State#repl_state{functions=NewFuns},
-    Module = build_module(StateWithFun) ++ "    :ok",
-    Beams = collect_beams(Module),
-    case compile_typed(Module, Beams, State) of
-        {ok, _} ->
-            State#repl_state{functions = NewFuns};
-        {error, Err} -> {error, Err, State};
-        Other -> {error, Other, State}
-    end.
+handle_fundef(Expr, State, Name) ->
+    handle_bind(Expr, State, Name).
 
 handle_bind(Expr,
             State = #repl_state{bindings = Bindings},
             {'Symbol', #{name := Name}}) ->
 
-    BindingExpr = Expr ++ " in " ++ binary_to_list(Name) ++ "\n\n",
-    Module = build_module(State) ++ BindingExpr,
+    NewBinding = [{Name, Expr}],
+
+    FilteredBindings = lists:filter(
+        fun({N, _}) -> N /= Name end, Bindings) ++ NewBinding,
+    %%BindingExpr = Expr ++ " in " ++ binary_to_list(Name) ++ "\n\n",
+    
+    FilteredState = State#repl_state{bindings = FilteredBindings},
+    Module = build_module(FilteredState) ++ " " ++ binary_to_list(Name),
     Beams = collect_beams(Module),
-    case compile_typed(Module, Beams, State) of
+    case compile_typed(Module, Beams, FilteredState) of
         {ok, {Mod, Types}} ->
-            MainType = find_main_type(Types),
-            %% Value bind - execute the expression and store the result
+            %%MainType = find_main_type(Types),
+            %% Value bind - execute the expression and store it
             try Mod:main({}) of
-                Res -> Bindings_ = Bindings ++ [{Name, MainType, Res}],
-                       State#repl_state{bindings = Bindings_}
+                _ -> FilteredState
             catch
                 error:Err -> {error, Err}
             end
@@ -280,7 +272,7 @@ parse_input(Input) ->
 % Strip ;; and newline terminators
 strip_terminator(Line) ->
   L = re:replace(Line, ";;\n$", "", [{return, list}]),
-  re:replace(L, "\n$", "", [{return, list}]).
+  re:replace(L, "\n$", " ", [{return, list}]).
 
 % Termination happens if a line is empty or terminates with ;;
 line_terminates(Line) ->
@@ -292,7 +284,7 @@ read_input(Prompt, Lines) ->
     Lines_ = Lines ++ strip_terminator(Line),
     case line_terminates(Line) of
         true -> Lines_;
-        false -> read_input("\x1b[33m- \x1b[0m", Lines_)
+        false -> read_input("\x1b[33m\xb7 \x1b[0m", Lines_)
     end.
 
 read_input(Prompt) ->
@@ -363,5 +355,20 @@ fun_bind_test() ->
         #repl_state{}, 
         {'Symbol', #{name => "sqr"}}),
     ?assertMatch(#repl_state{functions = ["let sqr x = x * x"]}, State).
+
+expression_rebind_test() ->
+    State1 = handle_bind(
+        "let num = 4", 
+        #repl_state{}, 
+        {'Symbol', #{name => <<"num">>}}),
+    State2 = handle_bind(
+        "let num = 8",
+        State1,
+        {'Symbol', #{name => <<"num">>}}
+    ),
+
+    ?assertMatch(
+        {ok, {8, t_int}},
+        run_expression("num", State2)).
 
 -endif.
