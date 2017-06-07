@@ -10,6 +10,7 @@
 
 -record(repl_state, {bindings = [],
                      types = [],
+                     infixes = [],
                      shell_id = "__shell__"}).
 
 %% Entrypoints
@@ -213,7 +214,11 @@ handle_expression(Expr, State) ->
     end,
     State.
 
+handle_fundef(Expr, State, {'Symbol', #{name := <<40, _/binary >>}}) ->
+    ok = infixes;
+
 handle_fundef(Expr, State, Name) ->
+    io:format("Name is ~p~n", [Name]),
     handle_bind(Expr, State, Name).
 
 handle_bind(Expr,
@@ -225,7 +230,7 @@ handle_bind(Expr,
     FilteredBindings = lists:filter(
         fun({N, _}) -> N /= Name end, Bindings) ++ NewBinding,
     %%BindingExpr = Expr ++ " in " ++ binary_to_list(Name) ++ "\n\n",
-    
+
     FilteredState = State#repl_state{bindings = FilteredBindings},
     Module = build_module(FilteredState) ++ " " ++ binary_to_list(Name),
     Beams = collect_beams(Module),
@@ -343,32 +348,41 @@ value_bind_test() ->
 
 value_expression_bind_test() ->
     State = handle_bind(
-        "let num = 24 + 24", 
-        #repl_state{}, 
+        "let num = 24 + 24",
+        #repl_state{},
         {'Symbol', #{name => <<"num">>}}),
     ?assertMatch(#repl_state{bindings = [{<<"num">>, "let num = 24 + 24"}]}, State),
     ?assertMatch({ok, {48, t_int}}, run_expression("num", State)).
 
 fun_bind_test() ->
     State = handle_fundef(
-        "let sqr x = x * x", 
-        #repl_state{}, 
+        "let sqr x = x * x",
+        #repl_state{},
         {'Symbol', #{name => <<"sqr">>}}),
     ?assertMatch(#repl_state{bindings = [{<<"sqr">>, "let sqr x = x * x"}]}, State).
 
 expression_rebind_test() ->
     State1 = handle_bind(
-        "let num = 4", 
-        #repl_state{}, 
+        "let num = 4",
+        #repl_state{},
         {'Symbol', #{name => <<"num">>}}),
     State2 = handle_bind(
         "let num = 8",
         State1,
-        {'Symbol', #{name => <<"num">>}}
-    ),
+        {'Symbol', #{name => <<"num">>}}),
 
     ?assertMatch(
         {ok, {8, t_int}},
         run_expression("num", State2)).
+
+bind_infix_test() ->
+    State = handle_fundef(
+        "let (<|) f x = f x",
+        #repl_state{},
+        {'Symbol', #{name => <<"(<|)">>}}),
+
+    ?assertMatch(
+        {ok, {20, t_int}},
+        run_expression("let add10 x = x + 10 in add10 <| 10")).
 
 -endif.
