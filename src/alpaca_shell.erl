@@ -338,7 +338,7 @@ value_bind_test() ->
         "let num = 42",
          #repl_state{},
          {'Symbol', #{name => <<"num">>}}),
-    ?assertMatch(#repl_state{bindings = [{<<"num">>, t_int, 42}]}, State),
+    ?assertMatch(#repl_state{bindings = [{<<"num">>, "let num = 42"}]}, State),
     ?assertMatch({ok, {42, t_int}}, run_expression("num", State)).
 
 value_expression_bind_test() ->
@@ -346,15 +346,15 @@ value_expression_bind_test() ->
         "let num = 24 + 24", 
         #repl_state{}, 
         {'Symbol', #{name => <<"num">>}}),
-    ?assertMatch(#repl_state{bindings = [{<<"num">>, t_int, 48}]}, State),
+    ?assertMatch(#repl_state{bindings = [{<<"num">>, "let num = 24 + 24"}]}, State),
     ?assertMatch({ok, {48, t_int}}, run_expression("num", State)).
 
 fun_bind_test() ->
     State = handle_fundef(
         "let sqr x = x * x", 
         #repl_state{}, 
-        {'Symbol', #{name => "sqr"}}),
-    ?assertMatch(#repl_state{functions = ["let sqr x = x * x"]}, State).
+        {'Symbol', #{name => <<"sqr">>}}),
+    ?assertMatch(#repl_state{bindings = [{<<"sqr">>, "let sqr x = x * x"}]}, State).
 
 expression_rebind_test() ->
     State1 = handle_bind(
